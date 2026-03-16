@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
       - name: mongo
-        image: mongo:6.0
+        image: mongo:8.0
         args:
         - "--replSet"
         - "rs0"
@@ -64,7 +64,7 @@ spec:
     spec:
       initContainers:
       - name: mongo-init-replica
-        image: mongo:6.0
+        image: mongo:8.0
         command:
         - "bash"
         - "-c"
