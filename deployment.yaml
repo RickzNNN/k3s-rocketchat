@@ -1,0 +1,188 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rocketchat-mongo
+  namespace: rocketchat
+  labels:
+    app: rocketchat-mongo
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rocketchat-mongo
+  template:
+    metadata:
+      labels:
+        app: rocketchat-mongo
+    spec:
+      containers:
+      - name: mongo
+        image: mongo:6.0
+        args:
+        - "--replSet"
+        - "rs0"
+        - "--oplogSize"
+        - "128"
+        ports:
+        - containerPort: 27017
+          name: mongo
+        volumeMounts:
+        - name: mongo-data
+          mountPath: /data/db
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+      volumes:
+      - name: mongo-data
+        persistentVolumeClaim:
+          claimName: rocketchat-mongo-data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rocketchat
+  namespace: rocketchat
+  labels:
+    app: rocketchat
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rocketchat
+  template:
+    metadata:
+      labels:
+        app: rocketchat
+    spec:
+      initContainers:
+      - name: mongo-init-replica
+        image: mongo:6.0
+        command:
+        - "bash"
+        - "-c"
+        - |
+          until mongosh --host rocketchat-mongo:27017 --eval "db.adminCommand('ping')" &>/dev/null; do
+            echo "Waiting for MongoDB..."
+            sleep 2
+          done
+          mongosh --host rocketchat-mongo:27017 --eval "
+            try {
+              rs.status();
+            } catch(e) {
+              rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'rocketchat-mongo:27017' }] });
+            }
+          "
+      containers:
+      - name: rocketchat
+        image: registry.rocket.chat/rocketchat/rocket.chat:latest
+        ports:
+        - containerPort: 3000
+          name: http
+        env:
+        - name: MONGO_URL
+          value: "mongodb://rocketchat-mongo:27017/rocketchat?replicaSet=rs0"
+        - name: MONGO_OPLOG_URL
+          value: "mongodb://rocketchat-mongo:27017/local?replicaSet=rs0"
+        - name: ROOT_URL
+          value: "http://192.168.40.8:30300"
+        - name: PORT
+          value: "3000"
+        - name: TZ
+          value: "Europe/Stockholm"
+        volumeMounts:
+        - name: uploads
+          mountPath: /app/uploads
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+      volumes:
+      - name: uploads
+        persistentVolumeClaim:
+          claimName: rocketchat-uploads
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rocketchat-mongo
+  namespace: rocketchat
+  labels:
+    app: rocketchat-mongo
+spec:
+  type: ClusterIP
+  selector:
+    app: rocketchat-mongo
+  ports:
+  - name: mongo
+    port: 27017
+    targetPort: 27017
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rocketchat
+  namespace: rocketchat
+  labels:
+    app: rocketchat
+spec:
+  type: ClusterIP
+  selector:
+    app: rocketchat
+  ports:
+  - name: http
+    port: 3000
+    targetPort: 3000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rocketchat-nodeport
+  namespace: rocketchat
+  labels:
+    app: rocketchat
+spec:
+  type: NodePort
+  selector:
+    app: rocketchat
+  ports:
+  - name: http
+    port: 3000
+    targetPort: 3000
+    nodePort: 30300
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rocketchat-mongo-data
+  namespace: rocketchat
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rocketchat-uploads
+  namespace: rocketchat
+spec:
+  accessModes:
+  - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
